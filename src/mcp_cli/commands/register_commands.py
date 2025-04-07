@@ -109,6 +109,7 @@ def cmd_command(
     tool: str = None,
     tool_args: str = None,
     system_prompt: str = None,
+    output_conversation: str = None,
 ):
     """Command mode for scriptable usage."""
     from mcp_cli.cli_options import process_options
@@ -123,6 +124,7 @@ def cmd_command(
         "tool": tool,
         "tool_args": tool_args,
         "system_prompt": system_prompt,
+        "output_conversation": output_conversation,
         "server_names": server_names
     }
     

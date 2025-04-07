@@ -8,7 +8,7 @@ import sys
 import json
 import logging
 import asyncio
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Any
 from rich import print
 
 # llm imports
@@ -37,6 +37,7 @@ async def cmd_run(
     model: Optional[str] = None,
     verbose: bool = False,
     server_names: Optional[Dict[int, str]] = None,
+    output_conversation: Optional[str] = None,
 ):
     """Run a command in non-interactive mode for automation and scripting."""
     
@@ -79,7 +80,7 @@ async def cmd_run(
             return
             
         # Otherwise, run LLM inference with tools
-        result = await run_llm_with_tools(
+        result, conversation = await run_llm_with_tools(
             server_streams, 
             provider_name, 
             model_name, 
@@ -91,6 +92,16 @@ async def cmd_run(
         
         # Output result
         write_output(result, output, raw)
+        
+        # Save conversation if requested
+        if output_conversation:
+            try:
+                with open(output_conversation, "w") as f:
+                    json.dump(conversation, f, indent=2)
+                logger.debug(f"Conversation saved to {output_conversation}")
+            except Exception as e:
+                logger.error(f"Error writing conversation to file: {e}")
+                sys.exit(1)
             
     except Exception as e:
         logger.error(f"Error in command mode: {e}")
@@ -157,6 +168,22 @@ async def run_single_tool(server_streams, tool_name, tool_args_json, server_name
     logger.error(f"Tool '{tool_name}' not found on any server")
     sys.exit(1)
 
+def parse_conversation(input_text: str) -> Optional[List[Dict[str, Any]]]:
+    """
+    Parses input text as a conversation. Returns None if invalid.
+    A valid conversation is a JSON list of messages with 'role' and 'content'.
+    """
+    try:
+        data = json.loads(input_text)
+        if isinstance(data, list) and all(
+            isinstance(item, dict) and 'role' in item and 'content' in item and 
+            item['role'] in ['system', 'user', 'assistant', 'tool'] for item in data
+        ):
+            return data
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
+    return None
+
 async def run_llm_with_tools(
     server_streams, 
     provider, 
@@ -215,19 +242,23 @@ async def run_llm_with_tools(
         logger.debug(f"Using LLM provider: {provider}, model: {model}")
     except Exception as e:
         logger.error(f"Error creating LLM client: {e}")
-        return f"Error: Could not initialize LLM client with provider={provider}, model={model}. {str(e)}"
+        return f"Error: Could not initialize LLM client with provider={provider}, model={model}. {str(e)}", []
     
-    # Build the user prompt
+    # Build the user prompt or use existing conversation
     user_prompt = input_text
     if prompt_template:
         # Replace {{input}} in the template with the actual input
         user_prompt = prompt_template.replace("{{input}}", input_text)
+
+    # Check if the user_prompt is already a valid conversation
+    conversation = parse_conversation(user_prompt)
     
-    # Create conversation
-    conversation = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt}
-    ]
+    # If not a conversation, create a new conversation with system prompt and user prompt
+    if conversation is None:
+        conversation = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
     
     # Get completion
     try:
@@ -239,7 +270,7 @@ async def run_llm_with_tools(
         
         if completion is None:
             logger.warning(f"LLM returned None completion")
-            return "Error: LLM returned no response. Please check your API key and connection."
+            return "Error: LLM returned no response. Please check your API key and connection.", conversation
         
         # Handle tool calls if necessary
         if completion.get("tool_calls"):
@@ -258,7 +289,7 @@ async def run_llm_with_tools(
                 
                 if final_completion is None:
                     logger.warning(f"LLM returned None for final completion")
-                    return "Error: LLM returned no response after tool calls."
+                    return "Error: LLM returned no response after tool calls.", conversation
                 
                 # If there are more tool calls, process them too
                 while "tool_calls" in final_completion and final_completion["tool_calls"] and iterations < max_iterations:
@@ -281,7 +312,7 @@ async def run_llm_with_tools(
                         summary = "Based on the tools executed, here's what I found:\n\n"
                         for msg in last_tools:
                             summary += f"- From {msg.get('name', 'tool')}: {msg.get('content', 'No content')[:150]}...\n"
-                        return summary
+                        return summary, conversation
                 
                 # Now extract the response
                 response = None
@@ -301,23 +332,23 @@ async def run_llm_with_tools(
                 
                 if response is None:
                     logger.warning(f"Could not extract response from final completion")
-                    return "Error: Could not extract a valid response from LLM output."
+                    return "Error: Could not extract a valid response from LLM output.", conversation
                     
-                return response
+                return response, conversation
             except Exception as e:
                 logger.error(f"Error getting final response: {e}")
-                return f"Error: Failed to get final response after tool calls: {str(e)}"
+                return f"Error: Failed to get final response after tool calls: {str(e)}", conversation
         else:
             # Return direct response
             response = completion.get("response")
             if response is None:
                 logger.warning(f"'response' field missing in completion: {completion}")
-                return "Error: LLM response format invalid (missing 'response' field)."
+                return "Error: LLM response format invalid (missing 'response' field).", conversation
                 
-            return response
+            return response, conversation
     except Exception as e:
         logger.error(f"Error during LLM completion: {e}")
-        return f"Error: An exception occurred while processing your request: {str(e)}"
+        return f"Error: An exception occurred while processing your request: {str(e)}", conversation
     
 async def process_tool_calls(tool_calls, conversation, server_streams, tool_to_server_map=None):
     """Process tool calls and update conversation."""
