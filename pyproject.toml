@@ -41,7 +41,8 @@ dev = [
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-packages = ["mcp_cli"]
+packages = ["mcp_cli", "mcp_cli.commands", "mcp_cli.ui", "mcp_cli.llm", "mcp_cli.chat"]
+
 
 [dependency-groups]
 dev = [
